@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket连接测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .test-section {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        .input-group label {
+            display: inline-block;
+            width: 100px;
+            font-weight: bold;
+        }
+        .input-group input {
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            width: 200px;
+        }
+        .message-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebSocket连接测试工具</h1>
+        <p>用于测试ContractShield AI后端的WebSocket连接功能</p>
+    </div>
+
+    <!-- 健康检查WebSocket -->
+    <div class="container">
+        <div class="test-section">
+            <h3>1. 健康检查WebSocket</h3>
+            <p>端点: <code>ws://localhost:8000/ws/health</code></p>
+            
+            <div id="health-status" class="status disconnected">未连接</div>
+            
+            <button id="health-connect" onclick="connectHealth()">连接</button>
+            <button id="health-disconnect" onclick="disconnectHealth()" disabled>断开</button>
+            <button id="health-ping" onclick="sendHealthPing()" disabled>发送Ping</button>
+            
+            <div class="log" id="health-log">等待连接...
+</div>
+        </div>
+    </div>
+
+    <!-- 审查进度WebSocket -->
+    <div class="container">
+        <div class="test-section">
+            <h3>2. 审查进度WebSocket</h3>
+            <p>端点: <code>ws://localhost:8000/ws/review/{task_id}</code></p>
+            
+            <div class="input-group">
+                <label>任务ID:</label>
+                <input type="number" id="task-id" value="1" min="1">
+            </div>
+            
+            <div id="review-status" class="status disconnected">未连接</div>
+            
+            <button id="review-connect" onclick="connectReview()">连接</button>
+            <button id="review-disconnect" onclick="disconnectReview()" disabled>断开</button>
+            <button id="review-status-btn" onclick="requestStatus()" disabled>请求状态</button>
+            <button id="review-heartbeat" onclick="sendHeartbeat()" disabled>发送心跳</button>
+            
+            <div class="log" id="review-log">等待连接...
+</div>
+        </div>
+    </div>
+
+    <!-- 测试WebSocket -->
+    <div class="container">
+        <div class="test-section">
+            <h3>3. 测试WebSocket</h3>
+            <p>端点: <code>ws://localhost:8000/ws/test/{client_id}</code></p>
+            
+            <div class="input-group">
+                <label>客户端ID:</label>
+                <input type="text" id="client-id" value="test_client_001">
+            </div>
+            
+            <div id="test-status" class="status disconnected">未连接</div>
+            
+            <button id="test-connect" onclick="connectTest()">连接</button>
+            <button id="test-disconnect" onclick="disconnectTest()" disabled>断开</button>
+            
+            <textarea class="message-input" id="test-message" placeholder="输入要发送的JSON消息...">{"type": "test", "message": "Hello WebSocket!"}</textarea>
+            <button id="test-send" onclick="sendTestMessage()" disabled>发送消息</button>
+            
+            <div class="log" id="test-log">等待连接...
+</div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket连接对象
+        let healthWS = null;
+        let reviewWS = null;
+        let testWS = null;
+
+        // 日志函数
+        function log(elementId, message) {
+            const logElement = document.getElementById(elementId);
+            const timestamp = new Date().toLocaleTimeString();
+            logElement.textContent += `[${timestamp}] ${message}\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        // 更新状态显示
+        function updateStatus(elementId, status, text) {
+            const statusElement = document.getElementById(elementId);
+            statusElement.className = `status ${status}`;
+            statusElement.textContent = text;
+        }
+
+        // 健康检查WebSocket
+        function connectHealth() {
+            if (healthWS) {
+                log('health-log', '已有连接存在');
+                return;
+            }
+
+            updateStatus('health-status', 'connecting', '连接中...');
+            log('health-log', '正在连接健康检查WebSocket...');
+
+            healthWS = new WebSocket('ws://localhost:8000/ws/health');
+
+            healthWS.onopen = function(event) {
+                updateStatus('health-status', 'connected', '已连接');
+                log('health-log', '✓ 连接成功');
+                document.getElementById('health-connect').disabled = true;
+                document.getElementById('health-disconnect').disabled = false;
+                document.getElementById('health-ping').disabled = false;
+            };
+
+            healthWS.onmessage = function(event) {
+                log('health-log', `收到消息: ${event.data}`);
+            };
+
+            healthWS.onerror = function(error) {
+                log('health-log', `✗ 连接错误: ${error}`);
+                updateStatus('health-status', 'disconnected', '连接错误');
+            };
+
+            healthWS.onclose = function(event) {
+                log('health-log', `连接关闭: ${event.code} - ${event.reason}`);
+                updateStatus('health-status', 'disconnected', '已断开');
+                document.getElementById('health-connect').disabled = false;
+                document.getElementById('health-disconnect').disabled = true;
+                document.getElementById('health-ping').disabled = true;
+                healthWS = null;
+            };
+        }
+
+        function disconnectHealth() {
+            if (healthWS) {
+                healthWS.close();
+                log('health-log', '主动断开连接');
+            }
+        }
+
+        function sendHealthPing() {
+            if (healthWS && healthWS.readyState === WebSocket.OPEN) {
+                const message = {type: 'ping', timestamp: Date.now()};
+                healthWS.send(JSON.stringify(message));
+                log('health-log', `发送: ${JSON.stringify(message)}`);
+            }
+        }
+
+        // 审查进度WebSocket
+        function connectReview() {
+            if (reviewWS) {
+                log('review-log', '已有连接存在');
+                return;
+            }
+
+            const taskId = document.getElementById('task-id').value;
+            if (!taskId) {
+                log('review-log', '请输入任务ID');
+                return;
+            }
+
+            updateStatus('review-status', 'connecting', '连接中...');
+            log('review-log', `正在连接审查WebSocket (任务ID: ${taskId})...`);
+
+            reviewWS = new WebSocket(`ws://localhost:8000/ws/review/${taskId}`);
+
+            reviewWS.onopen = function(event) {
+                updateStatus('review-status', 'connected', '已连接');
+                log('review-log', '✓ 连接成功');
+                document.getElementById('review-connect').disabled = true;
+                document.getElementById('review-disconnect').disabled = false;
+                document.getElementById('review-status-btn').disabled = false;
+                document.getElementById('review-heartbeat').disabled = false;
+            };
+
+            reviewWS.onmessage = function(event) {
+                log('review-log', `收到消息: ${event.data}`);
+            };
+
+            reviewWS.onerror = function(error) {
+                log('review-log', `✗ 连接错误: ${error}`);
+                updateStatus('review-status', 'disconnected', '连接错误');
+            };
+
+            reviewWS.onclose = function(event) {
+                log('review-log', `连接关闭: ${event.code} - ${event.reason}`);
+                updateStatus('review-status', 'disconnected', '已断开');
+                document.getElementById('review-connect').disabled = false;
+                document.getElementById('review-disconnect').disabled = true;
+                document.getElementById('review-status-btn').disabled = true;
+                document.getElementById('review-heartbeat').disabled = true;
+                reviewWS = null;
+            };
+        }
+
+        function disconnectReview() {
+            if (reviewWS) {
+                reviewWS.close();
+                log('review-log', '主动断开连接');
+            }
+        }
+
+        function requestStatus() {
+            if (reviewWS && reviewWS.readyState === WebSocket.OPEN) {
+                const message = {type: 'get_status'};
+                reviewWS.send(JSON.stringify(message));
+                log('review-log', `发送: ${JSON.stringify(message)}`);
+            }
+        }
+
+        function sendHeartbeat() {
+            if (reviewWS && reviewWS.readyState === WebSocket.OPEN) {
+                const message = {type: 'heartbeat', timestamp: Date.now()};
+                reviewWS.send(JSON.stringify(message));
+                log('review-log', `发送: ${JSON.stringify(message)}`);
+            }
+        }
+
+        // 测试WebSocket
+        function connectTest() {
+            if (testWS) {
+                log('test-log', '已有连接存在');
+                return;
+            }
+
+            const clientId = document.getElementById('client-id').value;
+            if (!clientId) {
+                log('test-log', '请输入客户端ID');
+                return;
+            }
+
+            updateStatus('test-status', 'connecting', '连接中...');
+            log('test-log', `正在连接测试WebSocket (客户端ID: ${clientId})...`);
+
+            testWS = new WebSocket(`ws://localhost:8000/ws/test/${clientId}`);
+
+            testWS.onopen = function(event) {
+                updateStatus('test-status', 'connected', '已连接');
+                log('test-log', '✓ 连接成功');
+                document.getElementById('test-connect').disabled = true;
+                document.getElementById('test-disconnect').disabled = false;
+                document.getElementById('test-send').disabled = false;
+            };
+
+            testWS.onmessage = function(event) {
+                log('test-log', `收到消息: ${event.data}`);
+            };
+
+            testWS.onerror = function(error) {
+                log('test-log', `✗ 连接错误: ${error}`);
+                updateStatus('test-status', 'disconnected', '连接错误');
+            };
+
+            testWS.onclose = function(event) {
+                log('test-log', `连接关闭: ${event.code} - ${event.reason}`);
+                updateStatus('test-status', 'disconnected', '已断开');
+                document.getElementById('test-connect').disabled = false;
+                document.getElementById('test-disconnect').disabled = true;
+                document.getElementById('test-send').disabled = true;
+                testWS = null;
+            };
+        }
+
+        function disconnectTest() {
+            if (testWS) {
+                testWS.close();
+                log('test-log', '主动断开连接');
+            }
+        }
+
+        function sendTestMessage() {
+            if (testWS && testWS.readyState === WebSocket.OPEN) {
+                const messageText = document.getElementById('test-message').value;
+                try {
+                    const message = JSON.parse(messageText);
+                    testWS.send(JSON.stringify(message));
+                    log('test-log', `发送: ${JSON.stringify(message)}`);
+                } catch (e) {
+                    log('test-log', `✗ 消息格式错误: ${e.message}`);
+                }
+            }
+        }
+
+        // 页面加载完成后的初始化
+        window.onload = function() {
+            log('health-log', '健康检查WebSocket测试工具已就绪');
+            log('review-log', '审查进度WebSocket测试工具已就绪');
+            log('test-log', '测试WebSocket工具已就绪');
+        };
+
+        // 页面关闭时清理连接
+        window.onbeforeunload = function() {
+            if (healthWS) healthWS.close();
+            if (reviewWS) reviewWS.close();
+            if (testWS) testWS.close();
+        };
+    </script>
+</body>
+</html>
