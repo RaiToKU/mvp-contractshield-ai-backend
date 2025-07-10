@@ -1,5 +1,9 @@
 import pytest
 import asyncio
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -8,6 +12,10 @@ from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.database import get_db, Base
 from app.models import User, Task, File, Role, Paragraph, Risk, Statute
+from app.services.ai_service import AIService
+from app.services.file_service import FileService
+from app.services.review_service import ReviewService
+from app.services.export_service import ExportService
 
 # 测试数据库配置
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
@@ -162,10 +170,90 @@ def sample_statute(db_session, sample_risk):
 @pytest.fixture
 def ai_service():
     """创建AI服务实例"""
-    from unittest.mock import patch
-    from app.services.ai_service import AIService
     with patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-key'}):
         return AIService()
+
+
+@pytest.fixture
+def file_service():
+    """创建文件服务实例"""
+    return FileService()
+
+
+@pytest.fixture
+def review_service():
+    """创建审查服务实例"""
+    return ReviewService()
+
+
+@pytest.fixture
+def export_service():
+    """创建导出服务实例"""
+    return ExportService()
+
+
+@pytest.fixture
+def temp_dir():
+    """创建临时目录"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        yield Path(temp_dir)
+
+
+@pytest.fixture
+def mock_openai_api():
+    """模拟OpenAI API调用"""
+    with patch('openai.OpenAI') as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value = mock_instance
+        
+        # 模拟embedding响应
+        mock_instance.embeddings.create.return_value = MagicMock(
+            data=[MagicMock(embedding=[0.1] * 1536)]
+        )
+        
+        # 模拟chat completion响应
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(
+                message=MagicMock(
+                    content='{"risks": [], "summary": "测试摘要"}'
+                )
+            )]
+        )
+        
+        yield mock_instance
+
+
+@pytest.fixture
+def mock_file_operations():
+    """模拟文件操作"""
+    with patch('builtins.open', create=True) as mock_open, \
+         patch('shutil.copyfileobj') as mock_copy, \
+         patch('os.makedirs') as mock_makedirs, \
+         patch('os.path.exists') as mock_exists:
+        
+        mock_exists.return_value = True
+        yield {
+            'open': mock_open,
+            'copy': mock_copy,
+            'makedirs': mock_makedirs,
+            'exists': mock_exists
+        }
+
+
+@pytest.fixture
+def sample_upload_file():
+    """创建示例上传文件"""
+    from fastapi import UploadFile
+    from io import BytesIO
+    
+    file_content = b"test file content"
+    mock_file = MagicMock(spec=UploadFile)
+    mock_file.filename = "test_contract.pdf"
+    mock_file.file = BytesIO(file_content)
+    mock_file.content_type = "application/pdf"
+    mock_file.size = len(file_content)
+    
+    return mock_file
 
 
 # 测试数据

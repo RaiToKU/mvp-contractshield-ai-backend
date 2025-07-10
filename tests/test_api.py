@@ -1,267 +1,387 @@
 import pytest
-import json
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
+import json
+import os
 from io import BytesIO
 
-from tests.conftest import SAMPLE_UPLOAD_FILE, SAMPLE_CONTRACT_TEXT
+from app.main import app
+from tests.conftest import SAMPLE_CONTRACT_TEXT
 
 
-class TestUploadAPI:
-    """测试文件上传API"""
+@pytest.mark.api
+class TestFileUploadAPI:
+    """文件上传API测试"""
     
-    def test_upload_file_success(self, client):
+    def test_upload_file_success(self, client, sample_upload_file):
         """测试文件上传成功"""
-        files = {
-            "file": ("test.pdf", BytesIO(b"test content"), "application/pdf")
-        }
-        data = {
-            "contract_type": "purchase"
-        }
-        
-        with patch('app.services.file_service.FileService.save_file') as mock_save:
-            mock_save.return_value = (1, "/test/path/test.pdf")
+        with patch('app.services.file_service.FileService.save_and_enqueue') as mock_save:
+            mock_save.return_value = 123
             
-            response = client.post("/api/v1/upload", files=files, data=data)
+            response = client.post(
+                "/api/upload",
+                files={"file": ("test.pdf", sample_upload_file.file, "application/pdf")},
+                data={"contract_type": "purchase", "user_id": "1"}
+            )
             
             assert response.status_code == 200
-            result = response.json()
-            assert "task_id" in result
-            assert "message" in result
+            data = response.json()
+            assert data["task_id"] == 123
+            assert data["status"] == "uploaded"
     
     def test_upload_file_invalid_type(self, client):
         """测试上传无效文件类型"""
-        files = {
-            "file": ("test.txt", BytesIO(b"test content"), "text/plain")
-        }
-        data = {
-            "contract_type": "purchase"
-        }
+        file_content = b"test content"
         
-        response = client.post("/api/v1/upload", files=files, data=data)
+        response = client.post(
+            "/api/upload",
+            files={"file": ("test.txt", BytesIO(file_content), "text/plain")},
+            data={"contract_type": "purchase", "user_id": "1"}
+        )
         
         assert response.status_code == 400
         assert "不支持的文件类型" in response.json()["detail"]
     
-    def test_upload_file_too_large(self, client):
-        """测试上传文件过大"""
-        large_content = b"x" * (50 * 1024 * 1024 + 1)  # 超过50MB
-        files = {
-            "file": ("large.pdf", BytesIO(large_content), "application/pdf")
-        }
-        data = {
-            "contract_type": "purchase"
-        }
+    def test_upload_file_missing_params(self, client, sample_upload_file):
+        """测试上传文件缺少参数"""
+        response = client.post(
+            "/api/upload",
+            files={"file": ("test.pdf", sample_upload_file.file, "application/pdf")}
+            # 缺少contract_type和user_id
+        )
         
-        response = client.post("/api/v1/upload", files=files, data=data)
-        
-        assert response.status_code == 400
-        assert "文件大小超过限制" in response.json()["detail"]
+        assert response.status_code == 422  # Validation error
     
-    def test_get_upload_status(self, client, sample_task):
-        """测试获取上传状态"""
-        response = client.get(f"/api/v1/upload/status/{sample_task.id}")
-        
-        assert response.status_code == 200
-        result = response.json()
-        assert result["task_id"] == sample_task.id
-        assert "status" in result
+    def test_upload_file_service_error(self, client, sample_upload_file):
+        """测试文件服务错误"""
+        with patch('app.services.file_service.FileService.save_and_enqueue') as mock_save:
+            mock_save.side_effect = Exception("Service error")
+            
+            response = client.post(
+                "/api/upload",
+                files={"file": ("test.pdf", sample_upload_file.file, "application/pdf")},
+                data={"contract_type": "purchase", "user_id": "1"}
+            )
+            
+            assert response.status_code == 500
 
 
-class TestReviewAPI:
-    """测试合同审查API"""
+@pytest.mark.api
+class TestContractReviewAPI:
+    """合同审查API测试"""
     
-    def test_draft_roles_success(self, client, sample_task, sample_file):
+    def test_get_draft_roles_success(self, client, sample_task):
         """测试获取草稿角色成功"""
-        with patch('app.services.review_service.ReviewService.get_draft_roles') as mock_draft:
-            mock_draft.return_value = {
-                "detected_parties": ["甲方公司", "乙方公司"],
-                "suggested_role": "buyer",
-                "confidence": 0.8
+        with patch('app.services.review_service.ReviewService.get_draft_roles') as mock_get_roles:
+            mock_get_roles.return_value = {
+                "candidates": [
+                    {"role": "buyer", "description": "买方"},
+                    {"role": "supplier", "description": "供应商"}
+                ],
+                "entities": {
+                    "companies": ["测试公司A", "测试公司B"]
+                }
             }
             
-            response = client.post("/api/v1/draft_roles", json={"task_id": sample_task.id})
+            response = client.get(f"/api/tasks/{sample_task.id}/draft-roles")
             
             assert response.status_code == 200
-            result = response.json()
-            assert "detected_parties" in result
-            assert "suggested_role" in result
+            data = response.json()
+            assert "candidates" in data
+            assert "entities" in data
+            assert len(data["candidates"]) == 2
+    
+    def test_get_draft_roles_task_not_found(self, client):
+        """测试获取草稿角色任务不存在"""
+        with patch('app.services.review_service.ReviewService.get_draft_roles') as mock_get_roles:
+            mock_get_roles.side_effect = ValueError("任务不存在")
+            
+            response = client.get("/api/tasks/999/draft-roles")
+            
+            assert response.status_code == 404
     
     def test_confirm_roles_success(self, client, sample_task):
         """测试确认角色成功"""
         with patch('app.services.review_service.ReviewService.confirm_roles') as mock_confirm:
-            mock_confirm.return_value = True
-            
-            response = client.post("/api/v1/confirm_roles", json={
-                "task_id": sample_task.id,
+            mock_confirm.return_value = {
+                "status": "success",
                 "role": "buyer",
-                "party_names": ["测试公司"]
-            })
+                "party_names": ["测试公司A"],
+                "auto_selected": True
+            }
+            
+            response = client.post(
+                f"/api/tasks/{sample_task.id}/confirm-roles",
+                json={
+                    "role": "buyer",
+                    "selected_entity_index": 0
+                }
+            )
             
             assert response.status_code == 200
-            result = response.json()
-            assert result["message"] == "角色确认成功"
+            data = response.json()
+            assert data["status"] == "success"
+            assert data["role"] == "buyer"
     
-    def test_confirm_roles_invalid_role(self, client, sample_task):
-        """测试确认无效角色"""
-        response = client.post("/api/v1/confirm_roles", json={
-            "task_id": sample_task.id,
-            "role": "invalid_role",
-            "party_names": ["测试公司"]
-        })
+    def test_confirm_roles_manual_input(self, client, sample_task):
+        """测试手动输入角色确认"""
+        with patch('app.services.review_service.ReviewService.confirm_roles') as mock_confirm:
+            mock_confirm.return_value = {
+                "status": "success",
+                "role": "supplier",
+                "party_names": ["手动输入公司"],
+                "auto_selected": False
+            }
+            
+            response = client.post(
+                f"/api/tasks/{sample_task.id}/confirm-roles",
+                json={
+                    "role": "supplier",
+                    "party_names": ["手动输入公司"]
+                }
+            )
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert data["auto_selected"] is False
+    
+    @pytest.mark.asyncio
+    async def test_start_review_success(self, client, sample_task):
+        """测试开始审查成功"""
+        with patch('app.services.review_service.ReviewService.start_review') as mock_start:
+            mock_start.return_value = None
+            
+            response = client.post(f"/api/tasks/{sample_task.id}/start-review")
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert data["message"] == "审查已开始"
+    
+    def test_get_review_result_success(self, client, sample_task, sample_risk):
+        """测试获取审查结果成功"""
+        with patch('app.services.review_service.ReviewService.get_review_result') as mock_get_result:
+            mock_get_result.return_value = {
+                "task_id": sample_task.id,
+                "status": "COMPLETED",
+                "risks": [{
+                    "title": sample_risk.title,
+                    "risk_level": sample_risk.risk_level,
+                    "summary": sample_risk.summary
+                }],
+                "summary": {
+                    "total_risks": 1,
+                    "high_risks": 1,
+                    "medium_risks": 0,
+                    "low_risks": 0
+                }
+            }
+            
+            response = client.get(f"/api/tasks/{sample_task.id}/result")
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert data["task_id"] == sample_task.id
+            assert "risks" in data
+            assert "summary" in data
+
+
+@pytest.mark.api
+class TestReportExportAPI:
+    """报告导出API测试"""
+    
+    def test_export_report_pdf_success(self, client, sample_task):
+        """测试导出PDF报告成功"""
+        with patch('app.services.export_service.ExportService.generate_report') as mock_export:
+            mock_export.return_value = "/path/to/report.pdf"
+            
+            response = client.post(
+                f"/api/tasks/{sample_task.id}/export",
+                json={"format": "pdf"}
+            )
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "download_url" in data
+            assert data["format"] == "pdf"
+    
+    def test_export_report_docx_success(self, client, sample_task):
+        """测试导出DOCX报告成功"""
+        with patch('app.services.export_service.ExportService.generate_report') as mock_export:
+            mock_export.return_value = "/path/to/report.docx"
+            
+            response = client.post(
+                f"/api/tasks/{sample_task.id}/export",
+                json={"format": "docx"}
+            )
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "download_url" in data
+            assert data["format"] == "docx"
+    
+    def test_export_report_txt_success(self, client, sample_task):
+        """测试导出TXT报告成功"""
+        with patch('app.services.export_service.ExportService.generate_report') as mock_export:
+            mock_export.return_value = "/path/to/report.txt"
+            
+            response = client.post(
+                f"/api/tasks/{sample_task.id}/export",
+                json={"format": "txt"}
+            )
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "download_url" in data
+            assert data["format"] == "txt"
+    
+    def test_export_report_invalid_format(self, client, sample_task):
+        """测试导出无效格式报告"""
+        response = client.post(
+            f"/api/tasks/{sample_task.id}/export",
+            json={"format": "invalid"}
+        )
         
         assert response.status_code == 400
-        assert "无效的角色类型" in response.json()["detail"]
     
-    def test_start_review_success(self, client, sample_task, sample_role):
-        """测试开始审查成功"""
-        with patch('app.services.review_service.ReviewService.start_review') as mock_review:
-            mock_review.return_value = None
-            
-            response = client.post("/api/v1/review", json={"task_id": sample_task.id})
-            
-            assert response.status_code == 200
-            result = response.json()
-            assert result["message"] == "审查已开始"
-    
-    def test_get_review_results(self, client, sample_task, sample_risk):
-        """测试获取审查结果"""
-        with patch('app.services.review_service.ReviewService.get_review_results') as mock_results:
-            mock_results.return_value = {
-                "risks": [{
-                    "id": sample_risk.id,
-                    "risk_type": sample_risk.risk_type,
-                    "risk_level": sample_risk.risk_level,
-                    "description": sample_risk.description
-                }],
-                "total_risks": 1,
-                "high_risks": 1,
-                "medium_risks": 0,
-                "low_risks": 0
-            }
-            
-            response = client.get(f"/api/v1/review/{sample_task.id}")
-            
-            assert response.status_code == 200
-            result = response.json()
-            assert "risks" in result
-            assert result["total_risks"] == 1
-    
-    def test_get_review_summary(self, client, sample_task):
-        """测试获取审查摘要"""
-        with patch('app.services.review_service.ReviewService.get_review_summary') as mock_summary:
-            mock_summary.return_value = {
-                "summary": "合同审查完成，发现1个高风险项目",
-                "recommendations": ["建议修改付款条款"]
-            }
-            
-            response = client.get(f"/api/v1/review/{sample_task.id}/summary")
-            
-            assert response.status_code == 200
-            result = response.json()
-            assert "summary" in result
-            assert "recommendations" in result
-    
-    def test_get_tasks_list(self, client, sample_task):
-        """测试获取任务列表"""
-        response = client.get("/api/v1/tasks")
-        
-        assert response.status_code == 200
-        result = response.json()
-        assert "tasks" in result
-        assert "total" in result
-        assert "page" in result
-        assert "size" in result
-
-
-class TestExportAPI:
-    """测试报告导出API"""
-    
-    def test_export_report_pdf(self, client, sample_task, sample_risk):
-        """测试导出PDF报告"""
+    def test_export_report_task_not_found(self, client):
+        """测试导出报告任务不存在"""
         with patch('app.services.export_service.ExportService.generate_report') as mock_export:
-            mock_export.return_value = "/test/path/report.pdf"
+            mock_export.side_effect = ValueError("任务不存在")
             
-            response = client.get(f"/api/v1/export/{sample_task.id}?format=pdf")
+            response = client.post(
+                "/api/tasks/999/export",
+                json={"format": "pdf"}
+            )
+            
+            assert response.status_code == 404
+    
+    def test_download_report_success(self, client, temp_dir):
+        """测试下载报告成功"""
+        # 创建临时文件
+        test_file = temp_dir / "test_report.pdf"
+        test_file.write_text("test content")
+        
+        with patch('app.api.export.os.path.exists') as mock_exists, \
+             patch('builtins.open', create=True) as mock_open:
+            
+            mock_exists.return_value = True
+            mock_open.return_value.__enter__.return_value.read.return_value = b"test content"
+            
+            response = client.get(f"/api/download/{test_file.name}")
             
             assert response.status_code == 200
             assert response.headers["content-type"] == "application/pdf"
     
-    def test_export_report_docx(self, client, sample_task, sample_risk):
-        """测试导出DOCX报告"""
-        with patch('app.services.export_service.ExportService.generate_report') as mock_export:
-            mock_export.return_value = "/test/path/report.docx"
+    def test_download_report_not_found(self, client):
+        """测试下载报告文件不存在"""
+        with patch('app.api.export.os.path.exists') as mock_exists:
+            mock_exists.return_value = False
             
-            response = client.get(f"/api/v1/export/{sample_task.id}?format=docx")
+            response = client.get("/api/download/nonexistent.pdf")
             
-            assert response.status_code == 200
-            assert "application/vnd.openxmlformats" in response.headers["content-type"]
-    
-    def test_export_report_txt(self, client, sample_task, sample_risk):
-        """测试导出TXT报告"""
-        with patch('app.services.export_service.ExportService.generate_simple_report') as mock_export:
-            mock_export.return_value = "简化报告内容"
-            
-            response = client.get(f"/api/v1/export/{sample_task.id}?format=txt")
-            
-            assert response.status_code == 200
-            assert response.headers["content-type"] == "text/plain; charset=utf-8"
-    
-    def test_preview_report(self, client, sample_task, sample_risk):
-        """测试预览报告"""
-        with patch('app.services.export_service.ExportService.get_report_data') as mock_preview:
-            mock_preview.return_value = {
-                "task_info": {"id": sample_task.id},
-                "risks": [{"id": sample_risk.id}]
-            }
-            
-            response = client.get(f"/api/v1/export/{sample_task.id}/preview")
-            
-            assert response.status_code == 200
-            result = response.json()
-            assert "task_info" in result
-            assert "risks" in result
-    
-    def test_get_export_formats(self, client, sample_task):
-        """测试获取导出格式"""
-        response = client.get(f"/api/v1/export/{sample_task.id}/formats")
-        
-        assert response.status_code == 200
-        result = response.json()
-        assert "formats" in result
-        assert "pdf" in result["formats"]
-        assert "docx" in result["formats"]
-        assert "txt" in result["formats"]
-    
-    def test_cleanup_export_files(self, client, sample_task):
-        """测试清理导出文件"""
-        with patch('app.services.export_service.ExportService.cleanup_files') as mock_cleanup:
-            mock_cleanup.return_value = True
-            
-            response = client.delete(f"/api/v1/export/{sample_task.id}/files")
-            
-            assert response.status_code == 200
-            result = response.json()
-            assert result["message"] == "导出文件已清理"
+            assert response.status_code == 404
 
 
-class TestHealthAPI:
-    """测试健康检查API"""
-    
-    def test_root_endpoint(self, client):
-        """测试根端点"""
-        response = client.get("/")
-        
-        assert response.status_code == 200
-        result = response.json()
-        assert result["message"] == "ContractShield AI Backend"
-        assert "version" in result
+@pytest.mark.api
+class TestHealthCheckAPI:
+    """健康检查API测试"""
     
     def test_health_check(self, client):
         """测试健康检查"""
         response = client.get("/health")
         
         assert response.status_code == 200
-        result = response.json()
-        assert result["status"] == "healthy"
-        assert "timestamp" in result
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "timestamp" in data
+    
+    def test_api_docs_accessible(self, client):
+        """测试API文档可访问"""
+        response = client.get("/docs")
+        
+        assert response.status_code == 200
+    
+    def test_openapi_json_accessible(self, client):
+        """测试OpenAPI JSON可访问"""
+        response = client.get("/openapi.json")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "openapi" in data
+        assert "info" in data
+
+
+@pytest.mark.integration
+class TestAPIIntegration:
+    """API集成测试"""
+    
+    def test_full_workflow_success(self, client, sample_upload_file):
+        """测试完整工作流程"""
+        # 1. 上传文件
+        with patch('app.services.file_service.FileService.save_and_enqueue') as mock_save:
+            mock_save.return_value = 123
+            
+            upload_response = client.post(
+                "/api/upload",
+                files={"file": ("test.pdf", sample_upload_file.file, "application/pdf")},
+                data={"contract_type": "purchase", "user_id": "1"}
+            )
+            
+            assert upload_response.status_code == 200
+            task_id = upload_response.json()["task_id"]
+        
+        # 2. 获取草稿角色
+        with patch('app.services.review_service.ReviewService.get_draft_roles') as mock_get_roles:
+            mock_get_roles.return_value = {
+                "candidates": [{"role": "buyer", "description": "买方"}],
+                "entities": {"companies": ["测试公司"]}
+            }
+            
+            roles_response = client.get(f"/api/tasks/{task_id}/draft-roles")
+            assert roles_response.status_code == 200
+        
+        # 3. 确认角色
+        with patch('app.services.review_service.ReviewService.confirm_roles') as mock_confirm:
+            mock_confirm.return_value = {
+                "status": "success",
+                "role": "buyer",
+                "party_names": ["测试公司"]
+            }
+            
+            confirm_response = client.post(
+                f"/api/tasks/{task_id}/confirm-roles",
+                json={"role": "buyer", "selected_entity_index": 0}
+            )
+            assert confirm_response.status_code == 200
+        
+        # 4. 开始审查
+        with patch('app.services.review_service.ReviewService.start_review') as mock_start:
+            mock_start.return_value = None
+            
+            review_response = client.post(f"/api/tasks/{task_id}/start-review")
+            assert review_response.status_code == 200
+        
+        # 5. 导出报告
+        with patch('app.services.export_service.ExportService.generate_report') as mock_export:
+            mock_export.return_value = "/path/to/report.pdf"
+            
+            export_response = client.post(
+                f"/api/tasks/{task_id}/export",
+                json={"format": "pdf"}
+            )
+            assert export_response.status_code == 200
+    
+    def test_error_handling_chain(self, client, sample_upload_file):
+        """测试错误处理链"""
+        # 测试服务层错误如何传播到API层
+        with patch('app.services.file_service.FileService.save_and_enqueue') as mock_save:
+            mock_save.side_effect = Exception("Database connection failed")
+            
+            response = client.post(
+                "/api/upload",
+                files={"file": ("test.pdf", sample_upload_file.file, "application/pdf")},
+                data={"contract_type": "purchase", "user_id": "1"}
+            )
+            
+            assert response.status_code == 500
+            assert "error" in response.json()
