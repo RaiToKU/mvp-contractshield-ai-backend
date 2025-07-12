@@ -3,7 +3,11 @@ from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
 import os
+import sys
 from dotenv import load_dotenv
+
+# 添加项目根目录到Python路径
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # 加载环境变量
 load_dotenv()

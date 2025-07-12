@@ -15,7 +15,9 @@ class AIService:
     """AI服务，处理OpenRouter API调用和向量检索"""
     
     def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY", "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")
+        self.api_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY environment variable is required")
         self.base_url = "https://openrouter.ai/api/v1/chat/completions"
         self.embedding_model = "text-embedding-ada-002"  # 保留用于向量化
         self.chat_model = "qwen/qwen3-235b-a22b:free"

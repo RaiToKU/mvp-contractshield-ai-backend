@@ -40,20 +40,19 @@ class TestFileService:
         """测试PDF文本提取"""
         file_path = "/test/path/test.pdf"
         
-        with patch('pdf2docx.Converter') as mock_converter:
-            mock_instance = MagicMock()
-            mock_converter.return_value = mock_instance
+        # 模拟 pdfplumber 提取
+        with patch('app.services.file_service.PDF_LIBRARY', 'pdfplumber'), \
+             patch('pdfplumber.open') as mock_open:
             
-            with patch('docx.Document') as mock_doc:
-                mock_doc.return_value.paragraphs = [
-                    MagicMock(text="段落1"),
-                    MagicMock(text="段落2")
-                ]
-                
-                text = file_service.extract_text_from_file(file_path)
-                
-                assert "段落1" in text
-                assert "段落2" in text
+            mock_pdf = MagicMock()
+            mock_page = MagicMock()
+            mock_page.extract_text.return_value = "PDF页面文本内容"
+            mock_pdf.pages = [mock_page]
+            mock_open.return_value.__enter__.return_value = mock_pdf
+            
+            text = file_service.extract_text_from_file(file_path)
+            
+            assert "PDF页面文本内容" in text
     
     def test_extract_text_from_docx(self, file_service):
         """测试DOCX文本提取"""

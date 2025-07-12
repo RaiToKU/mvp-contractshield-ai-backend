@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库服务
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: contractshield-postgres
+    environment:
+      POSTGRES_DB: contractshield
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ../database/init_user.sql:/docker-entrypoint-initdb.d/02-init-user.sql
+      - ../database/fix_permissions.sql:/docker-entrypoint-initdb.d/03-fix-permissions.sql
+      - ../database/init_complete.sql:/docker-entrypoint-initdb.d/04-init-complete.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - contractshield-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d contractshield"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # 等待数据库就绪的服务
+  db-wait:
+    image: postgres:15
+    container_name: contractshield-db-wait
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres123
+    command:
+      - bash
+      - -c
+      - |
+        echo 'Waiting for database to be ready...'
+        until pg_isready -h postgres -p 5432 -U postgres -d contractshield; do
+          echo 'Database not ready, waiting...'
+          sleep 2
+        done
+        echo 'Database is ready!'
+        
+        echo 'Testing postgres connection...'
+        psql -h postgres -U postgres -d contractshield -c 'SELECT version();'
+        
+        echo 'Checking if contractshield user exists...'
+        USER_EXISTS=$$(psql -h postgres -U postgres -d contractshield -t -c "SELECT 1 FROM pg_roles WHERE rolname='contractshield';" | xargs)
+        if [ "$$USER_EXISTS" = "1" ]; then
+          echo 'contractshield user exists, testing connection...'
+          PGPASSWORD=contractshield123 psql -h postgres -U contractshield -d contractshield -c 'SELECT current_user;'
+          
+          echo 'Checking tables...'
+          PGPASSWORD=contractshield123 psql -h postgres -U contractshield -d contractshield -c '\dt'
+          
+          echo 'Checking pgvector extension...'
+          PGPASSWORD=contractshield123 psql -h postgres -U contractshield -d contractshield -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
+        else
+          echo 'ERROR: contractshield user does not exist!'
+          echo 'Checking initialization logs...'
+          exit 1
+        fi
+        
+        echo 'Database initialization verification completed!'
+    networks:
+      - contractshield-network
+
+  # ContractShield AI Backend 应用服务
+  app:
+    image: crpi-quxtxo1i28qk1e0c.cn-guangzhou.personal.cr.aliyuncs.com/arceus/mvp-contractshield-ai-backend:latest
+    container_name: contractshield-app
+    environment:
+      - DATABASE_URL=postgresql://contractshield:contractshield123@postgres:5432/contractshield
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=false
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MAX_FILE_SIZE=50MB
+      - UPLOAD_DIR=/app/uploads
+      - TEMP_DIR=/app/temp
+      - LOG_LEVEL=INFO
+    volumes:
+      - app_uploads:/app/uploads
+      - app_temp:/app/temp
+      - app_logs:/app/logs
+    ports:
+      - "8000:8000"
+    depends_on:
+      db-wait:
+        condition: service_completed_successfully
+    networks:
+      - contractshield-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Nginx 反向代理 (可选)
+  nginx:
+    image: nginx:alpine
+    container_name: contractshield-nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - contractshield-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  app_uploads:
+    driver: local
+  app_temp:
+    driver: local
+  app_logs:
+    driver: local
+
+networks:
+  contractshield-network:
+    driver: bridge

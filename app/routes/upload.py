@@ -55,7 +55,7 @@ async def upload_contract(
         task_id = await get_file_service().save_and_enqueue(
             file=file,
             contract_type=contract_type,
-            user_id=1  # 暂时使用固定用户ID
+            user_id=2  # 使用存在的用户ID
         )
         
         # 自动进行文本提取和实体提取

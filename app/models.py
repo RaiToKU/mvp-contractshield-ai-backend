@@ -13,25 +13,41 @@ class User(Base):
     email = Column(String(100), unique=True, index=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
     
-    # 关系
-    tasks = relationship("Task", back_populates="user")
+    # 关系（暂时注释掉，等用户功能完善后再启用）
+    # tasks = relationship("Task", back_populates="user")
 
 class Task(Base):
     """审查任务表"""
     __tablename__ = "tasks"
     
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    status = Column(String(20), default="PENDING")  # PENDING, EXTRACTING, ENTITY_READY, READY, IN_PROGRESS, COMPLETED, FAILED
-    contract_type = Column(String(50))
+    # 添加user_id字段但不设置外键约束，使用默认值2（实际存在的用户ID）
+    user_id = Column(Integer, default=2)
+    
+    # 当前数据库中存在的字段
+    file_name = Column(String(255), nullable=False)  # NOT NULL字段
+    file_path = Column(String(500), nullable=False)  # NOT NULL字段
+    file_size = Column(Integer)
+    file_type = Column(String(50))
+    contract_type = Column(String(100))
+    status = Column(String(50), default="uploaded")
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    extracted_text = Column(Text)
+    parties = Column(JSON)  # jsonb in database
+    user_role = Column(String(50))
+    user_party_names = Column(JSON)  # jsonb in database
+    review_result = Column(JSON)  # jsonb in database
+    progress = Column(Integer, default=0)
+    error_message = Column(Text)
+    
+    # 新模型中的字段
     role = Column(String(50))  # buyer, seller, etc.
     entities_data = Column(JSON)  # 存储提取的实体数据
     entities_extracted_at = Column(TIMESTAMP)  # 实体提取时间
-    created_at = Column(TIMESTAMP, server_default=func.now())
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
     
-    # 关系
-    user = relationship("User", back_populates="tasks")
+    # 关系（暂时注释掉user关系）
+    # user = relationship("User", back_populates="tasks")
     files = relationship("File", back_populates="task")
     roles = relationship("Role", back_populates="task")
     paragraphs = relationship("Paragraph", back_populates="task")
