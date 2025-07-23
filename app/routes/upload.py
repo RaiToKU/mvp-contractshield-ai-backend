@@ -51,11 +51,10 @@ async def upload_contract(
                 detail="文件大小超过50MB限制"
             )
         
-        # 保存文件并创建任务
+        # 保存文件并创建任务（暂时不传入user_id，为后续账号体系预留）
         task_id = await get_file_service().save_and_enqueue(
             file=file,
-            contract_type=contract_type,
-            user_id=2  # 使用存在的用户ID
+            contract_type=contract_type
         )
         
         # 自动进行文本提取和实体提取

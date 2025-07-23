@@ -32,7 +32,7 @@ class FileService:
         self.upload_dir = os.getenv("UPLOAD_DIR", "./uploads")
         os.makedirs(self.upload_dir, exist_ok=True)
     
-    async def save_and_enqueue(self, file: UploadFile, contract_type: str, user_id: int = 2) -> int:
+    async def save_and_enqueue(self, file: UploadFile, contract_type: str, user_id: int = None) -> int:
         """保存文件并创建任务"""
         db = SessionLocal()
         try:
@@ -47,7 +47,7 @@ class FileService:
             
             # 先创建一个临时任务来获取ID
             temp_task = Task(
-                user_id=user_id,
+                user_id=user_id,  # 允许为None
                 file_name=file.filename,
                 file_path="temp",  # 临时路径，稍后更新
                 file_size=file_size,

@@ -21,8 +21,8 @@ class Task(Base):
     __tablename__ = "tasks"
     
     id = Column(Integer, primary_key=True, index=True)
-    # 添加user_id字段但不设置外键约束，使用默认值2（实际存在的用户ID）
-    user_id = Column(Integer, default=2)
+    # user_id字段允许为null，为后续账号体系预留
+    user_id = Column(Integer, nullable=True, default=None)
     
     # 当前数据库中存在的字段
     file_name = Column(String(255), nullable=False)  # NOT NULL字段
